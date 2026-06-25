@@ -5,6 +5,7 @@ import tensorflow as tf
 from collections import deque
 
 # ====== PARAMETROS ======
+# Parametros estructurales de la simulacion del brazo robotico
 NUM_SEGMENTS = 19
 BASE_LENGTH = 50
 WIDTH = 1000
@@ -12,30 +13,40 @@ HEIGHT = 700
 BASE_POS = np.array([WIDTH // 2, HEIGHT - 20])
 BASE_ANGLE = -np.pi / 2
 
+# Variables del sistema mecanico de tensiones y fuerzas por cables
 MAX_TENSION = 1.5
 TENSION_STEP = 0.04
 CABLE_FORCE_FACTOR = 0.04
 
+# Limites de proximidad para colisiones y alcance operativo del modelo
 OBJECT_RADIUS = 20
 MAX_REACH = NUM_SEGMENTS * BASE_LENGTH * 0.55
 
-EPISODES = 25  # subir esto despues
+# Configuracion del ciclo de simulacion y control de episodios de ejecucion
+EPISODES = 25  # Subir este parametro posteriormente para entrenamiento completo
 
+# Hiperparametros del algoritmo Deep Q-Network (DQN)
 GAMMA = 0.97
 LR = 0.00025
 BATCH_SIZE = 64
 MEMORY_SIZE = 30000
 TRAIN_EVERY = 4
 
+# Ajustes de la tasa de exploracion dinamica (Epsilon-Greedy)
 EPSILON = 1.0
 EPSILON_DECAY = 0.995
 MIN_EPSILON = 0.05
 
+# Especificaciones del buffer de imágenes de entrada para la red convolucional
 FRAME_STACK = 4
 IMG_SIZE = 84
 
 # ====== ENTORNO ======
 class Segment:
+    """
+    Guarda los atributos geometricos de longitud y anchura, asi como la rotacion
+    angular relativa expresada en radianes de una seccion del tentaculo.
+    """
     def __init__(self, length, width):
         self.length = length
         self.width = width
@@ -43,20 +54,33 @@ class Segment:
 
 
 class CableTentacle:
+    """
+    Clase principal que define la cadena de cinemática directa controlada por
+    fuerzas tensionadoras simuladas en los cables laterales.
+    """
     def __init__(self):
+        # Distribucion del tamaño y espesor decreciente hacia el extremo final del brazo
         lengths = np.linspace(BASE_LENGTH, BASE_LENGTH * 0.4, NUM_SEGMENTS)
         widths = np.linspace(30, 8, NUM_SEGMENTS)
         self.segments = [Segment(l, w) for l, w in zip(lengths, widths)]
-        self.left_tension = 1.0   # 👈 base constante
+        self.left_tension = 1.0   # Base de tension estatica constante inicial
         self.right_tension = 1.0
 
     def update_angles(self):
+        """
+        Modifica la orientacion angular de cada articulacion en base al diferencial neto de tension,
+        acentuando la flexibilidad de los modulos conforme se acercan a la punta.
+        """
         diff = self.right_tension - self.left_tension
         for i, seg in enumerate(self.segments):
             seg.angle += diff * (i + 1) * 0.01
             seg.angle = np.clip(seg.angle, -np.pi/5, np.pi/5)
 
     def compute_positions(self):
+        """
+        Calcula las coordenadas tridimensionales proyectadas sobre el plano bidimensional de Pygame
+        de cada eslabon partiendo del origen fijo de la base.
+        """
         positions = [BASE_POS.astype(float)]
         current_angle = BASE_ANGLE
         for seg in self.segments:
@@ -67,6 +91,10 @@ class CableTentacle:
         return positions
 
     def apply_action(self, action):
+        """
+        Modifica los valores numericos continuos de tension de los cables en base a los comandos elegidos.
+        Restringe los limites de operacion dentro de un umbral seguro para evitar flacidez o tension excesiva.
+        """
         if action == 0:
             self.left_tension += TENSION_STEP
             self.right_tension -= TENSION_STEP / 2
@@ -74,13 +102,17 @@ class CableTentacle:
             self.right_tension += TENSION_STEP
             self.left_tension -= TENSION_STEP / 2
 
-        # mantener base ~ 1
+        # Sostiene la tension media en torno a valores estables de operacion
         self.left_tension = np.clip(self.left_tension, 0.5, MAX_TENSION)
         self.right_tension = np.clip(self.right_tension, 0.5, MAX_TENSION)
 
 
 # ====== UTILIDADES ======
 def spawn_object():
+    """
+    Genera una posicion espacial aleatoria en coordenadas rectangulares para reubicar el objetivo
+    dentro del espacio accesible del robot.
+    """
     angle = random.uniform(-np.pi / 3, np.pi / 3)
     distance = random.uniform(MAX_REACH * 0.3, MAX_REACH * 0.8)
     x = BASE_POS[0] + distance * np.sin(angle)
@@ -89,11 +121,18 @@ def spawn_object():
 
 
 def tip_distance(tentacle, obj):
+    """
+    Calcula la distancia euclidiana escalar en pixeles desde el nodo final de la punta hasta el objetivo.
+    """
     return np.linalg.norm(tentacle.compute_positions()[-1] - obj)
 
 
 # ====== RENDER ======
 def render_image(tentacle, obj):
+    """
+    Crea una matriz binaria bidimensional que simula una representacion visual simplificada (camara).
+    Proyecta lineas continuas para los segmentos y una caja rellena para el objetivo, normalizando a 1.0.
+    """
     img = np.zeros((IMG_SIZE, IMG_SIZE), dtype=np.float32)
 
     def scale(p):
@@ -123,6 +162,10 @@ def render_image(tentacle, obj):
 
 
 def stack_frames(frames, new_frame):
+    """
+    Apila secuencialmente las capturas visuales en el eje de los canales (profundidad).
+    Permite que la red neuronal estime vectores cinematicos indirectos como la velocidad y aceleracion.
+    """
     frames.append(new_frame)
     if len(frames) < FRAME_STACK:
         while len(frames) < FRAME_STACK:
@@ -132,15 +175,23 @@ def stack_frames(frames, new_frame):
 
 # ====== MODELO MULTI-INPUT ======
 def build_model():
+    """
+    Construye e interconecta una arquitectura de red neuronal profunda con multiples entradas utilizando Keras.
+    Procesa de manera paralela las caracteristicas espaciales con capas Conv2D y los datos mecanicos lineales
+    de tension con capas Dense, unificando ambas ramas en un vector de salida que estima los valores Q.
+    """
+    # Rama de procesamiento de datos espaciales (Imágenes)
     img_input = tf.keras.layers.Input(shape=(IMG_SIZE, IMG_SIZE, FRAME_STACK))
     x = tf.keras.layers.Conv2D(32, 8, strides=4, activation='relu')(img_input)
     x = tf.keras.layers.Conv2D(64, 4, strides=2, activation='relu')(x)
     x = tf.keras.layers.Conv2D(64, 3, strides=1, activation='relu')(x)
     x = tf.keras.layers.Flatten()(x)
 
+    # Rama de procesamiento de datos estructurales internos (Tensiones)
     tension_input = tf.keras.layers.Input(shape=(2,))
     t = tf.keras.layers.Dense(32, activation='relu')(tension_input)
 
+    # Fusion e integracion multimodal de caracteristicas para la capa final de control
     combined = tf.keras.layers.concatenate([x, t])
     combined = tf.keras.layers.Dense(512, activation='relu')(combined)
     output = tf.keras.layers.Dense(2)(combined)
@@ -155,10 +206,16 @@ def build_model():
 
 
 # ====== MEMORIA ======
+# Inicializacion de la cola circular usada para el almacenamiento del Replay Buffer de experiencias
 memory = deque(maxlen=MEMORY_SIZE)
 
 
 def train_step(model):
+    """
+    Extrae una muestra aleatoria de transiciones almacenadas en el Replay Buffer (Experience Replay).
+    Calcula los objetivos temporales de la ecuacion de Bellman e inicia un ciclo descentralizado
+    de optimizacion de gradiente para ajustar los pesos de la red neuronal.
+    """
     if len(memory) < BATCH_SIZE:
         return
 
@@ -187,6 +244,11 @@ def train_step(model):
 
 # ====== ENTRENAMIENTO ======
 def train():
+    """
+    Bucle general de optimizacion y entrenamiento DQN. Coordina las transiciones del entorno,
+    la interaccion por politicas de probabilidad de exploracion, asigna los retornos numericos de recompensa
+    e interactua directamente guardando el modelo final optimizado en disco duro.
+    """
     model = build_model()
     epsilon = EPSILON
     step_global = 0
@@ -210,6 +272,7 @@ def train():
 
         for step in range(400):
 
+            # Mecanismo de seleccion de politicas Epsilon-Greedy
             if random.random() < epsilon:
                 action = random.choice([0, 1])
             else:
@@ -224,16 +287,18 @@ def train():
             # ====== DETECCION DE CONTACTO ======
             contact = dist < OBJECT_RADIUS + 10
 
-            # 👇 aumento de tensión al tocar
+            # Incremento automatico de rigidez mecanica de la estructura al hacer contacto con el objetivo
             if contact:
                 tentacle.left_tension = MAX_TENSION
                 tentacle.right_tension = MAX_TENSION
 
             # ====== REWARD ======
+            # Retorno condicional que incentiva la reduccion de distancia lineal hacia la meta
             reward = (prev_dist - dist) * 80 - 0.2
             if dist >= prev_dist:
                 reward -= 2
 
+            # Asignacion de recompensa critica por cumplimiento de la tarea (objetivo alcanzado)
             if contact:
                 reward += 3000
                 done = True
@@ -248,8 +313,10 @@ def train():
 
             next_state = (next_img, next_tension)
 
+            # Registro de la transicion de estados dentro del Buffer de experiencia
             memory.append((state, action, reward, next_state, done))
 
+            # Disparador condicional sincronizado de pasos para entrenamiento optimizado
             if step_global % TRAIN_EVERY == 0:
                 train_step(model)
 
@@ -264,11 +331,14 @@ def train():
             if done:
                 break
 
+        # Decremento gradual controlado del factor aleatorio de exploracion
         epsilon = max(MIN_EPSILON, epsilon * EPSILON_DECAY)
 
+        # Monitor de registros en consola por bloques de ejecucion
         if ep % 50 == 0:
             print(f"Ep {ep} | Reward {total_reward:.1f} | eps {epsilon:.3f}")
 
+    # Guardado del modelo entrenado y compilado en formato estructurado jerarquico (.h5)
     model.save("tentacle_visual_tension_dqn.h5")
     print("Entrenamiento listo")
 

@@ -5,6 +5,7 @@ import random
 import math
 import time
 
+# Configuracion de parametros globales de la simulacion mecanica y visual
 NUM_SEGMENTS = 19
 BASE_LENGTH = 50
 WIDTH = 1000
@@ -12,13 +13,16 @@ HEIGHT = 700
 BASE_POS = np.array([WIDTH // 2, HEIGHT - 20])
 BASE_ANGLE = -np.pi / 2
 
+# Factores fisicos que gobiernan la tension de los cables y movimiento del tentaculo
 MAX_TENSION = 1.5
 TENSION_STEP = 0.04
 CABLE_FORCE_FACTOR = 0.04
 
+# Parametros del objeto objetivo a capturar y limite maximo de alcance
 OBJECT_RADIUS = 20
 MAX_REACH = NUM_SEGMENTS * BASE_LENGTH * 0.55
 
+# Definicion de colores en formato RGB
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
 BLUE = (80, 80, 255)
@@ -27,19 +31,29 @@ GREEN = (80, 255, 120)
 YELLOW = (255, 220, 100)
 ORANGE = (255, 165, 0)
 
+# Inicializacion del entorno grafico de Pygame y fuentes de texto
 pygame.init()
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Simulación Tentáculo - IA")
+pygame.display.set_caption("Simulacion Tentaculo - IA")
 font = pygame.font.SysFont("Arial", 20)
 
 class Segment:
+    """
+    Representa una seccion individual o eslabon dentro del tentaculo.
+    Almacena sus dimensiones geometricas y su angulo de rotacion relativo.
+    """
     def __init__(self, length, width):
         self.length = length
         self.width = width
         self.angle = 0.0
 
 class CableTentacle:
+    """
+    Gestiona la estructura completa del tentaculo compuesto por multiples segmentos,
+    asi como la logica de tension de cables para curvar el sistema.
+    """
     def __init__(self):
+        # Distribuye el tamaño de los segmentos de forma decreciente desde la base a la punta
         lengths = np.linspace(BASE_LENGTH, BASE_LENGTH * 0.4, NUM_SEGMENTS)
         widths = np.linspace(30, 8, NUM_SEGMENTS)
         self.segments = [Segment(l, w) for l, w in zip(lengths, widths)]
@@ -47,6 +61,10 @@ class CableTentacle:
         self.right_tension = 0.0
 
     def apply_action(self, action):
+        """
+        Modifica los niveles de tension en los cables izquierdo o derecho segun la accion elegida.
+        Aplica un factor de relajacion automatica en las tensiones para simular comportamiento fisico.
+        """
         if action == 0:
             self.left_tension = min(MAX_TENSION, self.left_tension + TENSION_STEP)
             self.right_tension = max(0.0, self.right_tension - TENSION_STEP / 2)
@@ -59,7 +77,8 @@ class CableTentacle:
 
     def update_angles(self):
         """
-        Lógica correcta del tentáculo (idéntica a test_2.py)
+        Calcula el efecto de la diferencia de tensiones sobre cada eslabon.
+        El impacto de la fuerza se incrementa proporcionalmente hacia la punta del tentaculo.
         """
         SMOOTH_FORCE = CABLE_FORCE_FACTOR * 0.25
         diff = self.right_tension - self.left_tension
@@ -69,6 +88,10 @@ class CableTentacle:
             seg.angle = np.clip(seg.angle, -np.pi / 5, np.pi / 5)
 
     def compute_positions(self):
+        """
+        Calcula las coordenadas X e Y de los extremos de cada segmento en el espacio bidimensional.
+        Acumula secuencialmente las rotaciones relativas partiendo desde la posicion fija de la base.
+        """
         positions = [BASE_POS.copy()]
         current_angle = BASE_ANGLE
         for seg in self.segments:
@@ -79,6 +102,10 @@ class CableTentacle:
         return positions
 
     def draw(self, surface):
+        """
+        Dibuja los segmentos del tentaculo en la pantalla mediante poligonos geometricos.
+        Ademas genera lineas laterales de color azul y rojo para representar la tension de los cables.
+        """
         positions = self.compute_positions()
         left_points = []
         right_points = []
@@ -119,19 +146,36 @@ class CableTentacle:
         return positions
 
     def get_tip(self):
+        """
+        Retorna exclusivamente las coordenadas de la punta del tentaculo.
+        """
         return self.compute_positions()[-1]
 
 def get_tip_angle(t):
+    """
+    Calcula la orientacion angular absoluta de la punta sumando los angulos de todos los eslabones.
+    """
     return BASE_ANGLE + sum(seg.angle for seg in t.segments)
 
 def discretize_angle(angle):
+    """
+    Normaliza y reduce un angulo continuo a uno de los 8 sectores discretos posibles.
+    Simplifica el espacio de estados para que la Inteligencia Artificial tome decisiones.
+    """
     angle = (angle + np.pi) % (2 * np.pi) - np.pi
     return int(((angle + np.pi) / (2 * np.pi)) * 8) % 8
 
 def discretize_tension(T):
+    """
+    Discretiza el valor continuo de la tension de un cable en 3 niveles de intensidad enteros (0, 1 o 2).
+    """
     return int(np.clip(T / (MAX_TENSION / 3), 0, 2))
 
 def spawn_object():
+    """
+    Genera una posicion aleatoria en el espacio dentro de los limites de alcance del robot
+    para situar el objeto amarillo que se debe capturar.
+    """
     angle = random.uniform(-np.pi / 3, np.pi / 3)
     distance = random.uniform(MAX_REACH * 0.3, MAX_REACH * 0.7)
     x = BASE_POS[0] + distance * np.sin(angle)
@@ -139,6 +183,11 @@ def spawn_object():
     return np.array([x, y])
 
 def get_state(t, obj_pos):
+    """
+    Analiza la situacion actual del entorno y construye una tupla de valores discretos.
+    Mide distancias, direcciones relativas al objetivo, orientacion de la punta y tensiones de cables.
+    Este vector simplificado actua como llave de consulta dentro de la tabla Q de la IA.
+    """
     pos = t.get_tip()
     dx, dy = obj_pos - pos
     dist = np.hypot(dx, dy)
@@ -152,15 +201,22 @@ def get_state(t, obj_pos):
     tr = discretize_tension(t.right_tension)
     return (dist_bin, dir_bin, angle_bin, tl, tr)
 
+# Carga de la estructura de conocimiento previamente entrenada
 try:
     with open("tentacle_q.pkl", "rb") as f:
         Q = pickle.load(f)
     print("Q-table cargada.")
 except:
-    print("No se encontró tentacle_q.pkl — entrena primero.")
+    print("No se encontro tentacle_q.pkl - entrena primero.")
     Q = {}
 
 def main():
+    """
+    Bucle principal de ejecucion que renderiza la simulacion interactiva en tiempo real.
+    Consulta la Q-table cargada para mover el tentaculo de forma autonoma hacia el objetivo.
+    Evalua colisiones continuas entre los eslabones y el objeto, controlando contadores y tiempos limite.
+    Contiene una duplicacion estructural del ciclo diseñada para sostener la ejecucion secundaria del entorno.
+    """
     tentacle = CableTentacle()
     target = spawn_object()
     clock = pygame.time.Clock()
@@ -178,7 +234,7 @@ def main():
             if ev.type == pygame.QUIT:
                 running = False
 
-        # comprobar timeout (60 segundos)
+        # Comprobar limite de tiempo por intento (15 segundos)
         if time.time() - start_time >= 15:
             missed_count += 1
             tentacle = CableTentacle()
@@ -197,6 +253,7 @@ def main():
         positions = tentacle.draw(screen)
         pygame.draw.circle(screen, YELLOW, target.astype(int), OBJECT_RADIUS)
 
+        # Calculo geometrico de colisiones entre cada segmento del tentaculo y la circunferencia del objetivo
         collision = False
         for i in range(len(positions) - 1):
             a = positions[i]
@@ -238,6 +295,7 @@ def main():
 
     pygame.quit()
 
+    # Segunda seccion de visualizacion que se activa como respaldo de ejecucion continua
     tentacle = CableTentacle()
     target = spawn_object()
     clock = pygame.time.Clock()

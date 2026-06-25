@@ -6,7 +6,8 @@ import time
 import tensorflow as tf
 from collections import deque
 
-# ====== PARÁMETROS ======
+# ====== PARAMETROS ======
+# Definicion de variables estructurales y geometricas del entorno de simulacion
 NUM_SEGMENTS = 19
 BASE_LENGTH = 50
 WIDTH = 1000
@@ -14,17 +15,21 @@ HEIGHT = 700
 BASE_POS = np.array([WIDTH // 2, HEIGHT - 20])
 BASE_ANGLE = -np.pi / 2
 
+# Propiedades mecanicas de los cables y limites de tension aplicables
 MAX_TENSION = 1.5
 TENSION_STEP = 0.04
 CABLE_FORCE_FACTOR = 0.04
 
+# Parametros de colision del objetivo y rango limite del brazo robotico
 OBJECT_RADIUS = 20
 MAX_REACH = NUM_SEGMENTS * BASE_LENGTH * 0.55
 
+# Dimensiones de la matriz de imagen y cantidad de cuadros apilados para la red convolucional
 IMG_SIZE = 84
 FRAME_STACK = 4
 
 # ====== COLORES ======
+# Valores en formato RGB utilizados para el renderizado de la interfaz grafica
 BLACK = (0, 0, 0)
 WHITE = (255, 255, 255)
 BLUE = (80, 80, 255)
@@ -33,23 +38,29 @@ GREEN = (80, 255, 120)
 YELLOW = (255, 220, 100)
 ORANGE = (255, 165, 0)
 
+# Inicializacion del motor grafico Pygame y configuracion de la ventana
 pygame.init()
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Simulación Tentáculo - IA Visual + Tensión")
+pygame.display.set_caption("Simulacion Tentaculo - IA Visual + Tension")
 font = pygame.font.SysFont("Arial", 20)
 clock = pygame.time.Clock()
 
 # ====== MODELO ======
+# Carga de la red neuronal convolucional multimodal h5 omitiendo la etapa de compilacion inicial
 model = tf.keras.models.load_model("tentacle_visual_tension_dqn.h5", compile=False)
 model.compile(
     optimizer=tf.keras.optimizers.Adam(learning_rate=0.00025),
     loss='mse'
 )
 
-print("Modelo visual + tensión cargado correctamente")
+print("Modelo visual + tension cargado correctamente")
 
 # ====== ENTORNO ======
 class Segment:
+    """
+    Estructura basica de datos para almacenar la longitud, anchura y orientacion
+    angular individual de cada eslabon constituyente del tentaculo.
+    """
     def __init__(self, length, width):
         self.length = length
         self.width = width
@@ -57,16 +68,25 @@ class Segment:
 
 
 class CableTentacle:
+    """
+    Clase contenedora que gestiona la arquitectura de eslabones y simula
+    las reacciones cinematicas provocadas por los cambios de tension en los cables.
+    """
     def __init__(self):
+        # Distribuye las dimensiones decrecientes de cada modulo desde la base hasta el extremo
         lengths = np.linspace(BASE_LENGTH, BASE_LENGTH * 0.4, NUM_SEGMENTS)
         widths = np.linspace(30, 8, NUM_SEGMENTS)
         self.segments = [Segment(l, w) for l, w in zip(lengths, widths)]
 
-        # 👇 igual que entrenamiento
+        # Valores de inicio de tension para calibrar el equilibrio de fuerzas estaticas
         self.left_tension = 1.0
         self.right_tension = 1.0
 
     def apply_action(self, action):
+        """
+        Incrementa la tension de un cable lateral mientras reduce simultaneamente el opuesto,
+        manteniendo los resultados estrictamente dentro de los rangos operativos permitidos.
+        """
         if action == 0:
             self.left_tension += TENSION_STEP
             self.right_tension -= TENSION_STEP / 2
@@ -78,12 +98,20 @@ class CableTentacle:
         self.right_tension = np.clip(self.right_tension, 0.5, MAX_TENSION)
 
     def update_angles(self):
+        """
+        Aplica la diferencia neta de tensiones a las articulaciones consecutivas.
+        El efecto rotacional de la fuerza se intensifica en relacion directa con la distancia a la base.
+        """
         diff = self.right_tension - self.left_tension
         for i, seg in enumerate(self.segments):
             seg.angle += diff * (i + 1) * 0.01
             seg.angle = np.clip(seg.angle, -np.pi / 5, np.pi / 5)
 
     def compute_positions(self):
+        """
+        Resuelve la ecuacion de cinematica directa recorriendo la cadena de modulos articulados.
+        Entrega una lista ordenada de las coordenadas geometricas absolutas de cada nodo.
+        """
         positions = [BASE_POS.copy()]
         current_angle = BASE_ANGLE
         for seg in self.segments:
@@ -94,6 +122,10 @@ class CableTentacle:
         return positions
 
     def draw(self, surface):
+        """
+        Dibuja los contornos poligonales tridimensionales simulados para cada eslabon.
+        Traza lineas graficas externas adicionales para senalar visualmente el cable izquierdo (azul) y derecho (rojo).
+        """
         positions = self.compute_positions()
         left_points = []
         right_points = []
@@ -137,11 +169,18 @@ class CableTentacle:
         return positions
 
     def get_tip(self):
+        """
+        Extrae y devuelve el ultimo vector del arreglo posicional correspondente a la punta del brazo.
+        """
         return self.compute_positions()[-1]
 
 
 # ====== FUNCIONES ======
 def spawn_object():
+    """
+    Selecciona de forma aleatoria coordenadas polares controladas para generar el objeto
+    dentro de un area espacial aproximada donde el tentaculo tenga la capacidad fisica de interactuar.
+    """
     angle = random.uniform(-np.pi / 3, np.pi / 3)
     distance = random.uniform(MAX_REACH * 0.3, MAX_REACH * 0.7)
     x = BASE_POS[0] + distance * np.sin(angle)
@@ -151,6 +190,11 @@ def spawn_object():
 
 # ====== RENDER IA ======
 def render_image(tentacle, obj):
+    """
+    Construye una matriz de baja resolucion (84x84) que emula la entrada de una camara digital.
+    Escala y rasteriza de forma geometrica los segmentos del tentaculo y el punto del objetivo,
+    normalizando los pixeles ocupados a un valor binario flotante de 1.0 para el procesamiento de la IA.
+    """
     img = np.zeros((IMG_SIZE, IMG_SIZE), dtype=np.float32)
 
     def scale(p):
@@ -167,6 +211,7 @@ def render_image(tentacle, obj):
         p2 = scale(positions[i + 1])
 
         xs = np.linspace(p1[0], p2[0], 10).astype(int)
+        xs = np.linspace(p1[0], p2[0], 10).astype(int)
         ys = np.linspace(p1[1], p2[1], 10).astype(int)
 
         valid = (xs >= 0) & (xs < IMG_SIZE) & (ys >= 0) & (ys < IMG_SIZE)
@@ -180,6 +225,11 @@ def render_image(tentacle, obj):
 
 
 def stack_frames(frames, new_frame):
+    """
+    Mantiene una estructura de datos de tipo cola circular conteniendo las capturas mas recientes.
+    Agrupa los cuadros secuenciales a traves del eje de profundidad para proveer informacion temporal
+    de velocidad y sentido de movimiento a la red neuronal convolucional.
+    """
     frames.append(new_frame)
     if len(frames) < FRAME_STACK:
         while len(frames) < FRAME_STACK:
@@ -189,101 +239,10 @@ def stack_frames(frames, new_frame):
 
 # ====== MAIN ======
 def main():
+    """
+    Algoritmo central de ejecucion continua de la aplicacion grafica interactiva.
+    Calcula de forma sincrona los estados del entorno, invoca la inferencia de la red neuronal,
+    aplica las directrices fisicas de movimiento y evalua colisiones geometricas por tramos.
+    """
     tentacle = CableTentacle()
     target = spawn_object()
-
-    frames = deque(maxlen=FRAME_STACK)
-    img = stack_frames(frames, render_image(tentacle, target))
-
-    captured_count = 0
-    missed_count = 0
-    start_time = time.time()
-
-    running = True
-    while running:
-        screen.fill(BLACK)
-
-        for ev in pygame.event.get():
-            if ev.type == pygame.QUIT:
-                running = False
-
-        if time.time() - start_time >= 15:
-            missed_count += 1
-            tentacle = CableTentacle()
-            target = spawn_object()
-            start_time = time.time()
-
-        # ====== INPUT MODELO ======
-        tension_state = np.array([
-            tentacle.left_tension / MAX_TENSION,
-            tentacle.right_tension / MAX_TENSION
-        ])
-
-        q_values = model.predict(
-            [img[np.newaxis], tension_state[np.newaxis]],
-            verbose=0
-        )
-
-        action = int(np.argmax(q_values[0]))
-
-        tentacle.apply_action(action)
-        tentacle.update_angles()
-
-        positions = tentacle.draw(screen)
-        pygame.draw.circle(screen, YELLOW, target.astype(int), OBJECT_RADIUS)
-
-        # ====== COLISIÓN ORIGINAL ======
-        collision = False
-        for i in range(len(positions) - 1):
-            a = positions[i]
-            b = positions[i + 1]
-            seg = b - a
-            L = np.linalg.norm(seg)
-            if L == 0:
-                continue
-
-            seg_dir = seg / L
-            proj = np.clip(np.dot(target - a, seg_dir), 0, L)
-            closest = a + proj * seg_dir
-            d = np.linalg.norm(target - closest)
-
-            if d < OBJECT_RADIUS + tentacle.segments[i].width / 2:
-                collision = True
-                break
-
-        if collision:
-            pygame.draw.circle(screen, ORANGE, closest.astype(int), 6)
-
-            # 👇 igual que entrenamiento
-            tentacle.left_tension = MAX_TENSION
-            tentacle.right_tension = MAX_TENSION
-
-            captured_count += 1
-            tentacle = CableTentacle()
-            target = spawn_object()
-            start_time = time.time()
-
-        # ====== NUEVO FRAME ======
-        img = stack_frames(frames, render_image(tentacle, target))
-
-        # ====== UI ======
-        time_left = max(0, 15 - int(time.time() - start_time))
-
-        info = [
-            f"Capturados: {captured_count}",
-            f"No capturados: {missed_count}",
-            f"Tiempo restante: {time_left}s",
-            f"Accion: {['Izquierda', 'Derecha'][action]}",
-        ]
-
-        for i, txt in enumerate(info):
-            screen.blit(font.render(txt, True, WHITE), (20, 20 + i * 25))
-
-        pygame.display.flip()
-        clock.tick(60)
-
-    pygame.quit()
-
-
-if __name__ == "__main__":
-    main()
