@@ -3,6 +3,7 @@ import random
 import pickle
 import math
 
+# Configuracion estructural base identica para mantener correspondencia dinamica
 NUM_SEGMENTS = 19
 BASE_LENGTH = 50
 WIDTH = 1000
@@ -10,6 +11,7 @@ HEIGHT = 700
 BASE_POS = np.array([WIDTH // 2, HEIGHT - 20])
 BASE_ANGLE = -np.pi / 2
 
+# Constantes del modelo de cables y del espacio de maniobra
 MAX_TENSION = 1.5
 TENSION_STEP = 0.04
 CABLE_FORCE_FACTOR = 0.04
@@ -17,10 +19,12 @@ CABLE_FORCE_FACTOR = 0.04
 OBJECT_RADIUS = 20
 MAX_REACH = NUM_SEGMENTS * BASE_LENGTH * 0.55
 
+# Hiperparametros del algoritmo de Aprendizaje por Refuerzo Q-Learning
 LEARNING_RATE = 0.18
 DISCOUNT = 0.97
 EPISODES = 1000
 
+# Parametros para la estrategia de exploracion Epsilon-Greedy
 EPSILON = 1.0
 EPSILON_DECAY = 0.999
 MIN_EPSILON = 0.02
@@ -28,6 +32,9 @@ MIN_EPSILON = 0.02
 
 class Segment:
     def __init__(self, length, width):
+        """
+        Define el componente basico del tentaculo para calculos kinematicos del modelo sin graficos.
+        """
         self.length = length
         self.width = width
         self.angle = 0.0
@@ -35,6 +42,9 @@ class Segment:
 
 class CableTentacle:
     def __init__(self):
+        """
+        Instancia los arreglos de dimensionamiento y las variables de tension interna para el aprendizaje.
+        """
         lengths = np.linspace(BASE_LENGTH, BASE_LENGTH * 0.4, NUM_SEGMENTS)
         widths = np.linspace(30, 8, NUM_SEGMENTS)
         self.segments = [Segment(l, w) for l, w in zip(lengths, widths)]
@@ -42,6 +52,9 @@ class CableTentacle:
         self.right_tension = 0.0
 
     def update_angles(self):
+        """
+        Modifica la orientacion angular de cada pieza segun el estres neto del sistema.
+        """
         SMOOTH_FORCE = CABLE_FORCE_FACTOR * 0.25
         diff = self.right_tension - self.left_tension
         for i, seg in enumerate(self.segments):
@@ -49,6 +62,9 @@ class CableTentacle:
             seg.angle = np.clip(seg.angle, -np.pi / 5, np.pi / 5)
 
     def compute_positions(self):
+        """
+        Transforma los angulos internos a coordenadas cartesianas globales de forma secuencial.
+        """
         positions = [BASE_POS.astype(float)]
         current_angle = BASE_ANGLE
         for seg in self.segments:
@@ -59,6 +75,9 @@ class CableTentacle:
         return positions
 
     def apply_action(self, action):
+        """
+        Ejecuta las modificaciones de tension e inercia asociadas con las opciones discretas de control.
+        """
         if action == 0:
             self.left_tension = min(MAX_TENSION, self.left_tension + TENSION_STEP)
             self.right_tension = max(0.0, self.right_tension - TENSION_STEP / 2)
@@ -71,6 +90,9 @@ class CableTentacle:
 
 
 def spawn_object():
+    """
+    Genera posiciones de objetivos de entrenamiento distribuidos aleatoriamente dentro del area util.
+    """
     angle = random.uniform(-np.pi / 3, np.pi / 3)
     distance = random.uniform(MAX_REACH * 0.3, MAX_REACH * 0.8)
     x = BASE_POS[0] + distance * np.sin(angle)
@@ -79,23 +101,38 @@ def spawn_object():
 
 
 def tip_distance(tentacle, obj_pos):
+    """
+    Mide la distancia lineal directa euclidiana entre la punta del brazo y el objetivo.
+    """
     return np.linalg.norm(tentacle.compute_positions()[-1] - obj_pos)
 
 
 def get_tip_angle(tentacle):
+    """
+    Calcula el angulo acumulativo absoluto en radianes que presenta el extremo final.
+    """
     return BASE_ANGLE + sum(seg.angle for seg in tentacle.segments)
 
 
 def discretize_angle(angle):
+    """
+    Agrupa orientaciones continuas en indices discretos fijos para el modelado de estados.
+    """
     angle = (angle + np.pi) % (2 * np.pi) - np.pi
     return int(((angle + np.pi) / (2 * np.pi)) * 8) % 8
 
 
 def discretize_tension(T):
+    """
+    Cuantiza los niveles de tension de los tensores para indexacion estructurada.
+    """
     return int(np.clip(T / (MAX_TENSION / 3), 0, 2))
 
 
 def get_state(tentacle, obj_pos):
+    """
+    Construye la tupla descriptiva que actua como clave del diccionario en la Q-Table.
+    """
     tip = tentacle.compute_positions()[-1]
     dx, dy = obj_pos - tip
     dist = np.hypot(dx, dy)
@@ -114,6 +151,11 @@ def get_state(tentacle, obj_pos):
 
 
 def train():
+    """
+    Proceso central de optimizacion iterativa por refuerzo.
+    Simula miles de pasos distribuidos en episodios donde premia los acercamientos directos al
+    objetivo, penaliza la inactividad motora o alejamientos, y actualiza la ecuacion de Bellman discreta.
+    """
     q = {}
     epsilon = EPSILON
 
@@ -129,6 +171,7 @@ def train():
             if state not in q:
                 q[state] = np.zeros(2)
 
+            # Seleccion exploratoria o de explotacion basada en la tasa Epsilon actual
             if random.random() < epsilon:
                 action = random.choice([0, 1])
             else:
@@ -139,6 +182,7 @@ def train():
 
             dist = tip_distance(tentacle, obj)
 
+            # Calculo adaptativo del sistema de recompensas ponderadas
             reward = (prev_dist - dist) * 80
             reward -= 0.2
 
@@ -156,6 +200,7 @@ def train():
             ang_diff = abs(((target_angle - tip_angle + np.pi) % (2 * np.pi)) - np.pi)
             reward += (np.pi - ang_diff) * 0.25
 
+            # Condicion de exito si el extremo intercepta los limites radiales del objetivo
             if dist < OBJECT_RADIUS + 10:
                 reward += 3500
                 done = True
@@ -166,6 +211,7 @@ def train():
             if next_state not in q:
                 q[next_state] = np.zeros(2)
 
+            # Aplicacion de la formula fundamental de actualizacion de Q-Learning
             q[state][action] += LEARNING_RATE * (
                 reward + DISCOUNT * np.max(q[next_state]) - q[state][action]
             )
@@ -177,11 +223,13 @@ def train():
             if done:
                 break
 
+        # Reduccion logaritmica del parametro de exploracion
         epsilon = max(MIN_EPSILON, epsilon * EPSILON_DECAY)
 
         if ep % 200 == 0:
             print(f"Ep {ep} | R {total_reward:.1f} | eps {epsilon:.3f}")
 
+    # Exportacion del conocimiento consolidado a un archivo Pickle binario permanente
     with open("tentacle_q.pkl", "wb") as f:
         pickle.dump(q, f)
 
