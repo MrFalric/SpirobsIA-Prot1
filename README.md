@@ -29,4 +29,4 @@ El repositorio se divide en tres fases evolutivas distribuidas en **5 scripts pr
 Para instalar todas las librerías necesarias del proyecto en tu entorno, abre una terminal y ejecuta el siguiente comando:
 
 ```bash
-pip install numpy pygame opencv-python tensorflow gpiozero smbus2```
+pip install numpy pygame opencv-python tensorflow gpiozero smbus2
